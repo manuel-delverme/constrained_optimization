@@ -21,12 +21,14 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         if self.multipliers is None:
             self.init_dual_variables(eq_defect)
 
+        assert all([d.shape == m.shape for d, m in zip(eq_defect, self.multipliers)])
+
         self.primal_optimizer.zero_grad()
         self.dual_optimizer.zero_grad()
 
         if self.extrapolation:
             (loss + self.weighted_constraint(eq_defect)).backward()
-            [m.grad.mul_(-1) for m in self.multipliers]
+            [m.weight.grad.mul_(-1) for m in self.multipliers]
 
             self.primal_optimizer.extrapolation()
             # RYAN: this is not necessary
@@ -37,24 +39,44 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             loss, eq_defect, ineq_defect = closure()
 
         (loss + self.weighted_constraint(eq_defect)).backward()
-        [m.grad.mul_(-1) for m in self.multipliers]
+        [m.weight.grad.mul_(-1) for m in self.multipliers]
 
         self.primal_optimizer.step()
         self.dual_optimizer.step()
 
+        # This is the extrapolation loss for extragrad, not the previous, it could be confusing.
+        return loss, eq_defect
+
     def weighted_constraint(self, eq_defect):
         rhs = 0.
-        for multiplier, h_i in zip(self.state["multipliers"], eq_defect):
-            # F.embedding(input, self.weight, self.padding_idx, self.max_norm, self.norm_type, self.scale_grad_by_freq, self.sparse)
-            rhs += torch.einsum('bh,bh->', multiplier, h_i)
+        for multiplier, hi in zip(self.state["multipliers"], eq_defect):
+            # torch.embedding(indices, multiplier, sparse=True)
+            if hi.is_sparse:
+                hi = hi.coalesce()
+                indices = hi.indices().squeeze(0)
+                rhs += torch.einsum('bh,bh->', multiplier(indices), hi.values())
+            else:
+                rhs += torch.einsum('bh,bh->', multiplier, hi)
         return rhs
 
     def init_dual_variables(self, h):
         multipliers = []
         for hi in h:
-            m_i = torch.nn.Parameter(torch.zeros(hi.shape, device=hi.device))
+            if hi.is_sparse:
+                m_i = SparseMultiplier(hi)
+            else:
+                m_i = torch.nn.Parameter(torch.zeros(hi.shape, device=hi.device))
             multipliers.append(m_i)
 
         self.multipliers = torch.nn.ParameterList(multipliers)
         self.state["multipliers"] = self.multipliers
         self.dual_optimizer = self.dual_optimizer_class(self.multipliers.parameters())
+
+
+class SparseMultiplier(torch.nn.Embedding, torch.nn.Parameter):
+    def __init__(self, hi):
+        super().__init__(*hi.shape, _weight=torch.zeros(hi.shape, device=hi.device), sparse=True)
+
+    @property
+    def shape(self):
+        return self.weight.shape
