@@ -65,18 +65,32 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             if hi.is_sparse:
                 m_i = SparseMultiplier(hi)
             else:
-                m_i = torch.nn.Parameter(torch.zeros(hi.shape, device=hi.device))
+                m_i = DenseMultiplier(hi)
             multipliers.append(m_i)
 
-        self.multipliers = torch.nn.ParameterList(multipliers)
+        self.multipliers = torch.nn.ModuleList(multipliers)
         self.state["multipliers"] = self.multipliers
         self.dual_optimizer = self.dual_optimizer_class(self.multipliers.parameters())
 
 
-class SparseMultiplier(torch.nn.Embedding, torch.nn.Parameter):
+class SparseMultiplier(torch.nn.Embedding):
     def __init__(self, hi):
         super().__init__(*hi.shape, _weight=torch.zeros(hi.shape, device=hi.device), sparse=True)
 
     @property
     def shape(self):
         return self.weight.shape
+
+
+class DenseMultiplier(torch.nn.Module):
+    def __init__(self, hi):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.zeros(hi.shape, device=hi.device))
+
+    @property
+    def shape(self):
+        return self.weight.shape
+
+    @property
+    def forward(self):
+        return self.weight
