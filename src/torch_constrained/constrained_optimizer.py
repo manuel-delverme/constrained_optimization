@@ -27,7 +27,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.dual_optimizer.zero_grad()
 
         if self.extrapolation:
-            (loss + self.weighted_constraint(eq_defect)).backward()
+            (loss + sum(self.weighted_constraint(eq_defect))).backward()
             [m.weight.grad.mul_(-1) for m in self.multipliers]
 
             self.primal_optimizer.extrapolation()
@@ -38,7 +38,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             self.dual_optimizer.zero_grad()
             loss, eq_defect, ineq_defect = closure()
 
-        (loss + self.weighted_constraint(eq_defect)).backward()
+        (loss + sum(self.weighted_constraint(eq_defect))).backward()
         [m.weight.grad.mul_(-1) for m in self.multipliers]
 
         self.primal_optimizer.step()
@@ -47,16 +47,15 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         # This is the extrapolation loss for extragrad, not the previous, it could be confusing.
         return loss, eq_defect
 
-    def weighted_constraint(self, eq_defect):
-        rhs = 0.
+    def weighted_constraint(self, eq_defect) -> list:
+        rhs = []
         for multiplier, hi in zip(self.state["multipliers"], eq_defect):
-            # torch.embedding(indices, multiplier, sparse=True)
             if hi.is_sparse:
                 hi = hi.coalesce()
                 indices = hi.indices().squeeze(0)
-                rhs += torch.einsum('bh,bh->', multiplier(indices), hi.values())
+                rhs.append(torch.einsum('bh,bh->', multiplier(indices), hi.values()))
             else:
-                rhs += torch.einsum('bh,bh->', multiplier, hi)
+                rhs.append(torch.einsum('bh,bh->', multiplier, hi))
         return rhs
 
     def init_dual_variables(self, h):
