@@ -1,1 +1,1 @@
-from constrained_optimizer import *
+from .constrained_optimizer import *
