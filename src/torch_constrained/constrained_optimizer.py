@@ -15,8 +15,8 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         super().__init__(primal_parameters, {})
 
     def step(self, closure):
-        loss, eq_defect, ineq_defect = closure()
-        assert ineq_defect is None, NotImplementedError
+        loss, eq_defect, _ineq_defect = closure()
+        assert _ineq_defect is None, NotImplementedError
 
         if self.multipliers is None:
             self.init_dual_variables(eq_defect)
@@ -26,25 +26,24 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.primal_optimizer.zero_grad()
         self.dual_optimizer.zero_grad()
 
-        if self.extrapolation:
-            (loss + sum(self.weighted_constraint(eq_defect))).backward()
-            [m.weight.grad.mul_(-1) for m in self.multipliers]
+        (loss + sum(self.weighted_constraint(eq_defect))).backward()
+        [m.weight.grad.mul_(-1) for m in self.multipliers]
 
+        if self.extrapolation:
             self.primal_optimizer.extrapolation()
             # RYAN: this is not necessary
             self.dual_optimizer.extrapolation()
 
             self.primal_optimizer.zero_grad()
             self.dual_optimizer.zero_grad()
-            loss, eq_defect, ineq_defect = closure()
+            loss_, eq_defect_, _ = closure()
 
-        (loss + sum(self.weighted_constraint(eq_defect))).backward()
-        [m.weight.grad.mul_(-1) for m in self.multipliers]
+            (loss_ + sum(self.weighted_constraint(eq_defect_))).backward()
+            [m.weight.grad.mul_(-1) for m in self.multipliers]
 
         self.primal_optimizer.step()
         self.dual_optimizer.step()
 
-        # This is the extrapolation loss for extragrad, not the previous, it could be confusing.
         return loss, eq_defect
 
     def weighted_constraint(self, eq_defect) -> list:
