@@ -54,7 +54,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
                 indices = hi.indices().squeeze(0)
                 rhs.append(torch.einsum('bh,bh->', multiplier(indices), hi.values()))
             else:
-                rhs.append(torch.einsum('bh,bh->', multiplier, hi))
+                rhs.append(torch.einsum('bh,bh->', multiplier(hi), hi))
         return rhs
 
     def init_dual_variables(self, h):
@@ -79,6 +79,9 @@ class _SparseMultiplier(torch.nn.Embedding):
     def shape(self):
         return self.weight.shape
 
+    def forward(self):
+        return self.weight
+
 
 class _DenseMultiplier(torch.nn.Module):
     def __init__(self, hi):
@@ -89,9 +92,8 @@ class _DenseMultiplier(torch.nn.Module):
     def shape(self):
         return self.weight.shape
 
-    @property
-    def forward(self):
-        return self.weight
+    def forward(self, h):
+        return self.weight.repeat(h.shape[0], 1)
 
 
 class ExtraSGD(torch.optim.SGD):
