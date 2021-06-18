@@ -97,9 +97,9 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         if inequality_defect is not None:
             for hi in inequality_defect:
                 if hi.is_sparse:
-                    m_i = _SparseMultiplier(hi)
+                    m_i = _SparseMultiplier(hi, positive=True)
                 else:
-                    m_i = _DenseMultiplier(hi)
+                    m_i = _DenseMultiplier(hi, positive=True)
                 inequality_multipliers.append(m_i)
 
         self.equality_multipliers = torch.nn.ModuleList(equality_multipliers)
@@ -110,28 +110,38 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
 
 class _SparseMultiplier(torch.nn.Embedding):
-    def __init__(self, hi):
+    def __init__(self, hi, positive=False):
         super().__init__(*hi.shape, _weight=torch.zeros(hi.shape, device=hi.device), sparse=True)
+        self.positive = positive
 
     @property
     def shape(self):
         return self.weight.shape
 
     def forward(self):
-        return self.weight
+        w = self.weight.repeat(h.shape[0], 1)
+        if self.positive:
+            return torch.relu(w)
+        else:
+            return w
 
 
 class _DenseMultiplier(torch.nn.Module):
-    def __init__(self, hi):
+    def __init__(self, hi, positive=False):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.zeros(hi.shape, device=hi.device))
+        self.positive = positive
 
     @property
     def shape(self):
         return self.weight.shape
 
     def forward(self, h):
-        return self.weight.repeat(h.shape[0], 1)
+        w = self.weight.repeat(h.shape[0], 1)
+        if self.positive:
+            return torch.relu(w)
+        else:
+            return w
 
 
 class ExtraSGD(torch.optim.SGD):
