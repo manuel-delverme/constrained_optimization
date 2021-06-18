@@ -23,19 +23,17 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         self.extrapolation = extrapolation
 
-        self.equality_multipliers = None
-        self.inequality_multipliers = None
         self.dual_optimizer = None
         super().__init__(primal_parameters, {})
 
     def step(self, closure):
         loss, eq_defect, inequality_defect = closure()
 
-        if self.equality_multipliers is None and self.equality_multipliers is None:
+        if not self.equality_multipliers and not self.equality_multipliers:
             self.init_dual_variables(eq_defect, inequality_defect)
 
-        assert all([d.shape == m.shape for d, m in zip(eq_defect, self.equality_multipliers)])
-        assert all([d.shape == m.shape for d, m in zip(inequality_defect, self.inequality_multipliers)])
+        assert eq_defect is None or all([d.shape == m.shape for d, m in zip(eq_defect, self.equality_multipliers)])
+        assert inequality_defect is None or all([d.shape == m.shape for d, m in zip(inequality_defect, self.inequality_multipliers)])
 
         self.backward(loss, eq_defect, inequality_defect)
 
@@ -46,6 +44,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             self.dual_optimizer.extrapolation()
 
             loss_, eq_defect_, inequality_defect_ = closure()
+
             self.backward(loss_, eq_defect_, inequality_defect_)
 
         self.primal_optimizer.step()
@@ -53,7 +52,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         return loss, eq_defect
 
-    def backward(self, eq_defect, inequality_defect, loss):
+    def backward(self, loss, eq_defect, inequality_defect):
         self.primal_optimizer.zero_grad()
         self.dual_optimizer.zero_grad()
         loss.backward()
@@ -63,23 +62,24 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
     def weighted_constraint(self, eq_defect, inequality_defect) -> list:
         rhs = []
-        equality_multipliers, inequality_multipliers = self.state["multipliers"]
 
-        for multiplier, hi in zip(equality_multipliers, eq_defect):
-            if hi.is_sparse:
-                hi = hi.coalesce()
-                indices = hi.indices().squeeze(0)
-                rhs.append(torch.einsum('bh,bh->', multiplier(indices), hi.values()))
-            else:
-                rhs.append(torch.einsum('bh,bh->', multiplier(hi), hi))
+        if eq_defect is not None:
+            for multiplier, hi in zip(self.equality_multipliers, eq_defect):
+                if hi.is_sparse:
+                    hi = hi.coalesce()
+                    indices = hi.indices().squeeze(0)
+                    rhs.append(torch.einsum('bh,bh->', multiplier(indices), hi.values()))
+                else:
+                    rhs.append(torch.einsum('bh,bh->', multiplier(hi), hi))
 
-        for multiplier, hi in zip(inequality_multipliers, inequality_defect):
-            if hi.is_sparse:
-                hi = hi.coalesce()
-                indices = hi.indices().squeeze(0)
-                rhs.append(torch.einsum('bh,bh->', multiplier(indices), hi.values()))
-            else:
-                rhs.append(torch.einsum('bh,bh->', multiplier(hi), hi))
+        if inequality_defect is not None:
+            for multiplier, hi in zip(self.inequality_multipliers, inequality_defect):
+                if hi.is_sparse:
+                    hi = hi.coalesce()
+                    indices = hi.indices().squeeze(0)
+                    rhs.append(torch.einsum('bh,bh->', multiplier(indices), hi.values()))
+                else:
+                    rhs.append(torch.einsum('bh,bh->', multiplier(hi), hi))
         return rhs
 
     def init_dual_variables(self, equality_defect, inequality_defect):
@@ -102,11 +102,21 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
                     m_i = _DenseMultiplier(hi, positive=True)
                 inequality_multipliers.append(m_i)
 
-        self.equality_multipliers = torch.nn.ModuleList(equality_multipliers)
-        self.inequality_multipliers = torch.nn.ModuleList(inequality_multipliers)
+        self.state["equality_multipliers"] = torch.nn.ModuleList(equality_multipliers)
+        self.state["inequality_multipliers"] = torch.nn.ModuleList(inequality_multipliers)
 
-        self.state["multipliers"] = torch.nn.ParameterList([self.equality_multipliers, self.inequality_multipliers])
-        self.dual_optimizer = self.dual_optimizer_class(self.state["multipliers"])
+        self.dual_optimizer = self.dual_optimizer_class([
+            *self.state["equality_multipliers"].parameters(),
+            *self.state["inequality_multipliers"].parameters(),
+        ])
+
+    @property
+    def inequality_multipliers(self):
+        return self.state["inequality_multipliers"]
+
+    @property
+    def equality_multipliers(self):
+        return self.state["equality_multipliers"]
 
 
 class _SparseMultiplier(torch.nn.Embedding):
@@ -118,8 +128,8 @@ class _SparseMultiplier(torch.nn.Embedding):
     def shape(self):
         return self.weight.shape
 
-    def forward(self):
-        w = self.weight.repeat(h.shape[0], 1)
+    def forward(self, *args, **kwargs):
+        w = super().forward(*args, **kwargs)
         if self.positive:
             return torch.relu(w)
         else:
