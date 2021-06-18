@@ -31,7 +31,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
     def step(self, closure):
         loss, eq_defect, inequality_defect = closure()
 
-        if self.equality_multipliers is None:
+        if self.equality_multipliers is None and self.equality_multipliers is None:
             self.init_dual_variables(eq_defect, inequality_defect)
 
         assert all([d.shape == m.shape for d, m in zip(eq_defect, self.equality_multipliers)])
@@ -86,19 +86,21 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         equality_multipliers = []
         inequality_multipliers = []
 
-        for hi in equality_defect:
-            if hi.is_sparse:
-                m_i = _SparseMultiplier(hi)
-            else:
-                m_i = _DenseMultiplier(hi)
-            equality_multipliers.append(m_i)
+        if equality_defect is not None:
+            for hi in equality_defect:
+                if hi.is_sparse:
+                    m_i = _SparseMultiplier(hi)
+                else:
+                    m_i = _DenseMultiplier(hi)
+                equality_multipliers.append(m_i)
 
-        for hi in inequality_defect:
-            if hi.is_sparse:
-                m_i = _SparseMultiplier(hi)
-            else:
-                m_i = _DenseMultiplier(hi)
-            inequality_multipliers.append(m_i)
+        if inequality_defect is not None:
+            for hi in inequality_defect:
+                if hi.is_sparse:
+                    m_i = _SparseMultiplier(hi)
+                else:
+                    m_i = _DenseMultiplier(hi)
+                inequality_multipliers.append(m_i)
 
         self.equality_multipliers = torch.nn.ModuleList(equality_multipliers)
         self.inequality_multipliers = torch.nn.ModuleList(inequality_multipliers)
