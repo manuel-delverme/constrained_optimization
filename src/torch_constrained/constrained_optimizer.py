@@ -32,7 +32,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         if not self.equality_multipliers and not self.equality_multipliers:
             self.init_dual_variables(eq_defect, inequality_defect)
 
-        assert eq_defect is None or all([d.shape == m.shape for d, m in zip(eq_defect, self.equality_multipliers)])
+        assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.equality_multipliers)])
         assert inequality_defect is None or all([d.shape == m.shape for d, m in zip(inequality_defect, self.inequality_multipliers)])
 
         self.backward(loss, eq_defect, inequality_defect)
@@ -231,3 +231,10 @@ class ExtraAdagrad(torch.optim.Adagrad):
 
         # Free the old parameters
         self.old_iterate.clear()
+
+
+def validate_defect(defect, multiplier):
+    if defect.is_sparse:
+        return defect.shape == multiplier.shape
+    else:
+        return defect.shape == multiplier(defect).shape
