@@ -15,6 +15,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             primal_parameters,
             extrapolation=True,
             augmented_lagrangian=False,
+            ryan_step=False,
     ):
         assert not augmented_lagrangian
 
@@ -22,6 +23,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y)
 
         self.extrapolation = extrapolation
+        self.ryan_step = ryan_step
 
         self.dual_optimizer = None
         super().__init__(primal_parameters, {})
@@ -38,17 +40,17 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.backward(loss, eq_defect, inequality_defect)
 
         if self.extrapolation:
-            self.primal_optimizer.extrapolation()
+            self.primal_optimizer.extrapolation(loss)
 
             # RYAN: this is not necessary
-            self.dual_optimizer.extrapolation()
+            self.dual_optimizer.extrapolation(loss)
 
             loss_, eq_defect_, inequality_defect_ = closure()
 
             self.backward(loss_, eq_defect_, inequality_defect_)
 
-        self.primal_optimizer.step()
-        self.dual_optimizer.step()
+        self.primal_optimizer.step(loss_)
+        self.dual_optimizer.step(loss_)
 
         return loss, eq_defect
 
@@ -147,7 +149,8 @@ class _DenseMultiplier(torch.nn.Module):
         return self.weight.shape
 
     def forward(self, h):
-        w = self.weight.repeat(h.shape[0], 1)
+        # w = self.weight.repeat(h.shape[0], 1)
+        w = self.weight
         if self.positive:
             return torch.relu(w)
         else:
@@ -160,7 +163,7 @@ class ExtraSGD(torch.optim.SGD):
         super().__init__(*args, **kwargs)
 
     @torch.no_grad()
-    def extrapolation(self):
+    def extrapolation(self, _):
         """Performs the extrapolation step and save a copy of the current parameters for the update step.
         """
         if self.old_iterate:
@@ -192,13 +195,55 @@ class ExtraSGD(torch.optim.SGD):
         self.old_iterate.clear()
 
 
+class RyanStep(torch.optim.SGD):
+    def __init__(self, *args, **kwargs):
+        self.old_iterate = []
+        self.old_loss = None
+        super().__init__(*args, **kwargs)
+
+    @torch.no_grad()
+    def extrapolation(self, loss):
+        """Performs the extrapolation step and save a copy of the current parameters for the update step. """
+        if self.old_iterate:
+            raise RuntimeError('Need to call step before calling extrapolation again.')
+        for group in self.param_groups:
+            for p in group['params']:
+                self.old_iterate.append(p.detach().clone())
+
+        # Move to extrapolation point
+        super().step()
+        self.old_loss = loss
+
+    @torch.no_grad()
+    def step(self, loss):
+        if len(self.old_iterate) == 0:
+            raise RuntimeError('Need to call extrapolation before calling step.')
+
+        i = -1
+        improvement = (self.old_loss - loss)
+        for group in self.param_groups:
+            for p in group['params']:
+                i += 1
+                normal_to_plane = -p.grad
+
+                # Move back to the previous point
+                p = self.old_iterate[i]
+                # self.primal_optimizer.lr = improvement / grad_norm
+                lr = improvement / torch.norm(normal_to_plane, 2)
+                p.grad = normal_to_plane * lr
+        super().step()
+
+        # Free the old parameters
+        self.old_iterate.clear()
+
+
 class ExtraAdagrad(torch.optim.Adagrad):
     def __init__(self, *args, **kwargs):
         self.old_iterate = []
         super().__init__(*args, **kwargs)
 
     @torch.no_grad()
-    def extrapolation(self):
+    def extrapolation(self, _):
         """Performs the extrapolation step and save a copy of the current parameters for the update step.
         """
         if self.old_iterate:
