@@ -10,7 +10,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             self,
             loss_optimizer: Type[torch.optim.Optimizer],
             constraint_optimizer: Type[torch.optim.Optimizer],
-            lr_x,
+            lr_x,https://github.com/GauthierGidel/Variational-Inequality-GAN
             lr_y,
             primal_parameters,
             extrapolation=True,
@@ -157,7 +157,7 @@ class _DenseMultiplier(torch.nn.Module):
 
         return w
 
-
+# Adapted from: https://github.com/GauthierGidel/Variational-Inequality-GAN
 class ExtraSGD(torch.optim.SGD):
     def __init__(self, *args, **kwargs):
         self.old_iterate = []
