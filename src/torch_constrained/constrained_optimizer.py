@@ -132,10 +132,11 @@ class _SparseMultiplier(torch.nn.Embedding):
 
     def forward(self, *args, **kwargs):
         w = super().forward(*args, **kwargs)
+        w = self.weight
         if self.positive:
-            return torch.relu(w)
-        else:
-            return w
+            w.data = torch.relu(w).data
+
+        return w
 
 
 class _DenseMultiplier(torch.nn.Module):
@@ -152,9 +153,9 @@ class _DenseMultiplier(torch.nn.Module):
         # w = self.weight.repeat(h.shape[0], 1)
         w = self.weight
         if self.positive:
-            return torch.relu(w)
-        else:
-            return w
+            w.data = torch.relu(w).data
+
+        return w
 
 
 class ExtraSGD(torch.optim.SGD):
