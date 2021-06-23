@@ -4,13 +4,12 @@ from typing import Type
 import torch
 import torch.nn
 
-
 class ConstrainedOptimizer(torch.optim.Optimizer):
     def __init__(
             self,
             loss_optimizer: Type[torch.optim.Optimizer],
             constraint_optimizer: Type[torch.optim.Optimizer],
-            lr_x,https://github.com/GauthierGidel/Variational-Inequality-GAN
+            lr_x,
             lr_y,
             primal_parameters,
             extrapolation=True,
