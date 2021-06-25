@@ -4,6 +4,7 @@ from typing import Type
 import torch
 import torch.nn
 
+
 class ConstrainedOptimizer(torch.optim.Optimizer):
     def __init__(
             self,
@@ -12,19 +13,16 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             lr_x,
             lr_y,
             primal_parameters,
-            extrapolation=True,
             augmented_lagrangian=False,
-            ryan_step=False,
+            alternating=False,
     ):
         assert not augmented_lagrangian
 
         self.primal_optimizer = loss_optimizer(primal_parameters, lr_x)
         self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y)
 
-        self.extrapolation = extrapolation
-        self.ryan_step = ryan_step
-
         self.dual_optimizer = None
+        self.alternating = alternating
         super().__init__(primal_parameters, {})
 
     def step(self, closure):
@@ -38,17 +36,26 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         self.backward(loss, eq_defect, inequality_defect)
 
-        if self.extrapolation:
+        should_back_prop = False
+        if hasattr(self.primal_optimizer, "extrapolation"):
             self.primal_optimizer.extrapolation(loss)
+            should_back_prop = True
 
-            # RYAN: this is not necessary
+        # RYAN: this is not necessary
+        if not self.alternating and hasattr(self.dual_optimizer, "extrapolation"):
             self.dual_optimizer.extrapolation(loss)
+            should_back_prop = True
 
+        if should_back_prop:
             loss_, eq_defect_, inequality_defect_ = closure()
             self.backward(loss_, eq_defect_, inequality_defect_)
 
-        self.primal_optimizer.step(loss_)
-        self.dual_optimizer.step(loss_)
+        self.primal_optimizer.step()
+
+        loss_, eq_defect_, inequality_defect_ = closure()
+        if self.alternating:
+            self.backward(loss_, eq_defect_, inequality_defect_)
+        self.dual_optimizer.step()
 
         return loss, eq_defect
 
@@ -155,8 +162,10 @@ class _DenseMultiplier(torch.nn.Module):
 
         return w
 
-# Adapted from: https://github.com/GauthierGidel/Variational-Inequality-GAN
+
 class ExtraSGD(torch.optim.SGD):
+    require_extrapolation = True
+
     def __init__(self, *args, **kwargs):
         self.old_iterate = []
         super().__init__(*args, **kwargs)
@@ -185,55 +194,6 @@ class ExtraSGD(torch.optim.SGD):
                 i += 1
                 # Move back to the previous point
                 p.data = self.old_iterate[i].data
-        super().step()
-
-        # Free the old parameters
-        self.old_iterate.clear()
-
-
-class RyanStep(torch.optim.SGD):
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError
-        self.old_iterate = []
-        self.old_loss = None
-        super().__init__(*args, **kwargs)
-
-    @torch.no_grad()
-    def extrapolation(self, loss):
-        """Performs the extrapolation step and save a copy of the current parameters for the update step. """
-        if self.old_iterate:
-            raise RuntimeError('Need to call step before calling extrapolation again.')
-        for group in self.param_groups:
-            for p in group['params']:
-                self.old_iterate.append(p.detach().clone())
-
-        # Move to extrapolation point
-        super().step()
-        self.old_loss = loss
-
-    @torch.no_grad()
-    def step(self, loss):
-        if len(self.old_iterate) == 0:
-            raise RuntimeError('Need to call extrapolation before calling step.')
-
-        # x_prime,  y_prime = from extrapolation step
-        # improvemetn = - loss(x_prime, y) + loss(x, y_prime)
-
-        i = -1
-        improvement = (self.old_loss - loss)
-        if improvement < 0:
-            print("guaranteed improvement fail", improvement)
-
-        for group in self.param_groups:
-            for p in group['params']:
-                i += 1
-                normal_to_plane = -p.grad
-
-                # Move back to the previous point
-                p = self.old_iterate[i]
-                # self.primal_optimizer.lr = improvement / grad_norm
-                lr = improvement / torch.pow((torch.norm(normal_to_plane, 2), 2) + 1e-10)
-                p.grad = normal_to_plane * lr
         super().step()
 
         # Free the old parameters
