@@ -4,7 +4,6 @@ from typing import Type
 import torch
 import torch.nn
 
-
 class ConstrainedOptimizer(torch.optim.Optimizer):
     def __init__(
             self,
@@ -156,7 +155,7 @@ class _DenseMultiplier(torch.nn.Module):
 
         return w
 
-
+# Adapted from: https://github.com/GauthierGidel/Variational-Inequality-GAN
 class ExtraSGD(torch.optim.SGD):
     def __init__(self, *args, **kwargs):
         self.old_iterate = []
