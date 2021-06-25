@@ -46,7 +46,6 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             self.dual_optimizer.extrapolation(loss)
 
             loss_, eq_defect_, inequality_defect_ = closure()
-
             self.backward(loss_, eq_defect_, inequality_defect_)
 
         self.primal_optimizer.step(loss_)
@@ -185,11 +184,8 @@ class ExtraSGD(torch.optim.SGD):
         for group in self.param_groups:
             for p in group['params']:
                 i += 1
-                normal_to_plane = -p.grad
-
                 # Move back to the previous point
-                p = self.old_iterate[i]
-                p.grad = normal_to_plane
+                p.data = self.old_iterate[i].data
         super().step()
 
         # Free the old parameters
@@ -198,6 +194,7 @@ class ExtraSGD(torch.optim.SGD):
 
 class RyanStep(torch.optim.SGD):
     def __init__(self, *args, **kwargs):
+        raise NotImplementedError
         self.old_iterate = []
         self.old_loss = None
         super().__init__(*args, **kwargs)
@@ -220,8 +217,14 @@ class RyanStep(torch.optim.SGD):
         if len(self.old_iterate) == 0:
             raise RuntimeError('Need to call extrapolation before calling step.')
 
+        # x_prime,  y_prime = from extrapolation step
+        # improvemetn = - loss(x_prime, y) + loss(x, y_prime)
+
         i = -1
         improvement = (self.old_loss - loss)
+        if improvement < 0:
+            print("guaranteed improvement fail", improvement)
+
         for group in self.param_groups:
             for p in group['params']:
                 i += 1
@@ -230,7 +233,7 @@ class RyanStep(torch.optim.SGD):
                 # Move back to the previous point
                 p = self.old_iterate[i]
                 # self.primal_optimizer.lr = improvement / grad_norm
-                lr = improvement / torch.norm(normal_to_plane, 2)
+                lr = improvement / torch.pow((torch.norm(normal_to_plane, 2), 2) + 1e-10)
                 p.grad = normal_to_plane * lr
         super().step()
 
@@ -265,14 +268,8 @@ class ExtraAdagrad(torch.optim.Adagrad):
         for group in self.param_groups:
             for p in group['params']:
                 i += 1
-                if p.grad is None:
-                    normal_to_plane = None
-                else:
-                    normal_to_plane = -p.grad
-
                 # Move back to the previous point
-                p = self.old_iterate[i]
-                p.grad = normal_to_plane
+                p.data = self.old_iterate[i].data
         super().step()
 
         # Free the old parameters
