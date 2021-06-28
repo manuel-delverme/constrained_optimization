@@ -62,8 +62,9 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
     def backward(self, loss, eq_defect, inequality_defect):
         self.primal_optimizer.zero_grad()
         self.dual_optimizer.zero_grad()
-        loss.backward()
-        sum(self.weighted_constraint(eq_defect, inequality_defect)).backward()
+        rhs = self.weighted_constraint(eq_defect, inequality_defect)
+        lagrangian = loss + sum(rhs)
+        lagrangian.backward()
         [m.weight.grad.mul_(-1) for m in self.equality_multipliers]
         [m.weight.grad.mul_(-1) for m in self.inequality_multipliers]
 
