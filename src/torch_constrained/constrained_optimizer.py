@@ -96,6 +96,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         if equality_defect is not None:
             for hi in equality_defect:
+                assert hi.ndim == 2, "shape (batch_size, *) required"
                 if hi.is_sparse:
                     m_i = _SparseMultiplier(hi)
                 else:
@@ -104,6 +105,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         if inequality_defect is not None:
             for hi in inequality_defect:
+                assert hi.ndim == 2, "shape (batch_size, *) required"
                 if hi.is_sparse:
                     m_i = _SparseMultiplier(hi, positive=True)
                 else:
