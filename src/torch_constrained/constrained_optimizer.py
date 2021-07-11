@@ -1,5 +1,5 @@
 import functools
-from typing import Type
+from typing import Type, Callable, Union
 
 import torch
 import torch.nn
@@ -15,6 +15,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             primal_parameters,
             augmented_lagrangian=False,
             alternating=False,
+            shrinkage: Union[bool, Callable] = False,
     ):
         assert not augmented_lagrangian
 
@@ -23,9 +24,16 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         self.dual_optimizer = None
         self.alternating = alternating
+        self.shrinkage = shrinkage
         super().__init__(primal_parameters, {})
 
-    def step(self, closure):
+    def step(self, closure_):
+        def closure():
+            loss_, eq_defect_, inequality_defect_ = closure_()
+            if self.shrinkage and eq_defect_:
+                eq_defect_ = [self.shrinkage(e) for e in eq_defect_]
+            return loss_, eq_defect_, inequality_defect_
+
         loss, eq_defect, inequality_defect = closure()
 
         if not self.equality_multipliers and not self.equality_multipliers:
@@ -34,7 +42,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.equality_multipliers)])
         assert inequality_defect is None or all([d.shape == m.shape for d, m in zip(inequality_defect, self.inequality_multipliers)])
 
-        self.backward(loss, eq_defect, inequality_defect)
+        lagrangian = self.backward(loss, eq_defect, inequality_defect)
 
         should_back_prop = False
         if hasattr(self.primal_optimizer, "extrapolation"):
@@ -48,16 +56,16 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         if should_back_prop:
             loss_, eq_defect_, inequality_defect_ = closure()
-            self.backward(loss_, eq_defect_, inequality_defect_)
+            lagrangian_ = self.backward(loss_, eq_defect_, inequality_defect_)
 
         self.primal_optimizer.step()
 
         loss_, eq_defect_, inequality_defect_ = closure()
         if self.alternating:
-            self.backward(loss_, eq_defect_, inequality_defect_)
+            lagrangian_ = self.backward(loss_, eq_defect_, inequality_defect_)
         self.dual_optimizer.step()
 
-        return loss, eq_defect
+        return lagrangian
 
     def backward(self, loss, eq_defect, inequality_defect):
         self.primal_optimizer.zero_grad()
@@ -67,6 +75,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         lagrangian.backward()
         [m.weight.grad.mul_(-1) for m in self.equality_multipliers]
         [m.weight.grad.mul_(-1) for m in self.inequality_multipliers]
+        return lagrangian.item()
 
     def weighted_constraint(self, eq_defect, inequality_defect) -> list:
         rhs = []
@@ -140,6 +149,7 @@ class _SparseMultiplier(torch.nn.Embedding):
 
     def forward(self, *args, **kwargs):
         w = super().forward(*args, **kwargs)
+        raise NotImplementedError("WTF")
         w = self.weight
         if self.positive:
             w.data = torch.relu(w).data
@@ -204,6 +214,76 @@ class ExtraSGD(torch.optim.SGD):
 
 
 class ExtraAdagrad(torch.optim.Adagrad):
+    def __init__(self, *args, **kwargs):
+        self.old_iterate = []
+        super().__init__(*args, **kwargs)
+
+    @torch.no_grad()
+    def extrapolation(self, _):
+        """Performs the extrapolation step and save a copy of the current parameters for the update step.
+        """
+        if self.old_iterate:
+            raise RuntimeError('Need to call step before calling extrapolation again.')
+        for group in self.param_groups:
+            for p in group['params']:
+                self.old_iterate.append(p.detach().clone())
+
+        # Move to extrapolation point
+        super().step()
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if len(self.old_iterate) == 0:
+            raise RuntimeError('Need to call extrapolation before calling step.')
+
+        i = -1
+        for group in self.param_groups:
+            for p in group['params']:
+                i += 1
+                # Move back to the previous point
+                p.data = self.old_iterate[i].data
+        super().step()
+
+        # Free the old parameters
+        self.old_iterate.clear()
+
+
+class ExtraAdam(torch.optim.Adam):
+    def __init__(self, *args, **kwargs):
+        self.old_iterate = []
+        super().__init__(*args, **kwargs)
+
+    @torch.no_grad()
+    def extrapolation(self, _):
+        """Performs the extrapolation step and save a copy of the current parameters for the update step.
+        """
+        if self.old_iterate:
+            raise RuntimeError('Need to call step before calling extrapolation again.')
+        for group in self.param_groups:
+            for p in group['params']:
+                self.old_iterate.append(p.detach().clone())
+
+        # Move to extrapolation point
+        super().step()
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if len(self.old_iterate) == 0:
+            raise RuntimeError('Need to call extrapolation before calling step.')
+
+        i = -1
+        for group in self.param_groups:
+            for p in group['params']:
+                i += 1
+                # Move back to the previous point
+                p.data = self.old_iterate[i].data
+        super().step()
+
+        # Free the old parameters
+        self.old_iterate.clear()
+
+
+class ExtraRMSProp(torch.optim.RMSprop):
     def __init__(self, *args, **kwargs):
         self.old_iterate = []
         super().__init__(*args, **kwargs)
