@@ -36,7 +36,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         loss, eq_defect, inequality_defect = closure_with_shrinkage()
 
-        if not self.equality_multipliers and not self.equality_multipliers:
+        if not self.equality_multipliers and not self.inequality_multipliers:
             self.init_dual_variables(eq_defect, inequality_defect)
 
         assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.equality_multipliers)])
