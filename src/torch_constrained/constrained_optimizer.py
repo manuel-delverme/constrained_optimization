@@ -42,7 +42,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.equality_multipliers)])
         assert inequality_defect is None or all([d.shape == m.shape for d, m in zip(inequality_defect, self.inequality_multipliers)])
 
-        lagrangian = self.backward(loss, eq_defect, inequality_defect)
+        lagrangian = self.minmax_backward(loss, eq_defect, inequality_defect)
 
         should_back_prop = False
         if hasattr(self.primal_optimizer, "extrapolation"):
@@ -56,18 +56,18 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         if should_back_prop:
             loss_, eq_defect_, inequality_defect_ = closure_with_shrinkage()
-            lagrangian_ = self.backward(loss_, eq_defect_, inequality_defect_)
+            lagrangian_ = self.minmax_backward(loss_, eq_defect_, inequality_defect_)
 
         self.primal_optimizer.step()
 
-        loss_, eq_defect_, inequality_defect_ = closure_with_shrinkage()
         if self.alternating:
-            lagrangian_ = self.backward(loss_, eq_defect_, inequality_defect_)
+            loss_, eq_defect_, inequality_defect_ = closure_with_shrinkage()
+            lagrangian_ = self.minmax_backward(loss_, eq_defect_, inequality_defect_)
         self.dual_optimizer.step()
 
         return lagrangian
 
-    def backward(self, loss, eq_defect, inequality_defect):
+    def minmax_backward(self, loss, eq_defect, inequality_defect):
         self.primal_optimizer.zero_grad()
         self.dual_optimizer.zero_grad()
         rhs = self.weighted_constraint(eq_defect, inequality_defect)
