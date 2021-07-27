@@ -4,6 +4,7 @@ from typing import Type, Callable, Union
 import torch
 import torch.nn
 
+from extra_optimizer import get_extra_optimizer_class
 
 class ConstrainedOptimizer(torch.optim.Optimizer):
     def __init__(
@@ -13,13 +14,15 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             lr_x,
             lr_y,
             primal_parameters,
+            optimizer_kwargs={},
             augmented_lagrangian=False,
             alternating=False,
             shrinkage: Union[bool, Callable] = False,
     ):
         assert not augmented_lagrangian
 
-        self.primal_optimizer = loss_optimizer(primal_parameters, lr_x)
+        primal_optimizer_class = get_extra_optimizer_class(loss_optimizer)
+        self.primal_optimizer = primal_optimizer_class(primal_parameters, lr_x, **optimizer_kwargs)
         self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y)
 
         self.dual_optimizer = None
@@ -174,152 +177,3 @@ class _DenseMultiplier(torch.nn.Module):
             w.data = torch.relu(w).data
 
         return w
-
-
-class ExtraSGD(torch.optim.SGD):
-    require_extrapolation = True
-
-    def __init__(self, *args, **kwargs):
-        self.old_iterate = []
-        super().__init__(*args, **kwargs)
-
-    @torch.no_grad()
-    def extrapolation(self, _):
-        """Performs the extrapolation step and save a copy of the current parameters for the update step.
-        """
-        if self.old_iterate:
-            raise RuntimeError('Need to call step before calling extrapolation again.')
-        for group in self.param_groups:
-            for p in group['params']:
-                self.old_iterate.append(p.detach().clone())
-
-        # Move to extrapolation point
-        super().step()
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        if len(self.old_iterate) == 0:
-            raise RuntimeError('Need to call extrapolation before calling step.')
-
-        i = -1
-        for group in self.param_groups:
-            for p in group['params']:
-                i += 1
-                # Move back to the previous point
-                p.data = self.old_iterate[i].data
-        super().step()
-
-        # Free the old parameters
-        self.old_iterate.clear()
-
-
-class ExtraAdagrad(torch.optim.Adagrad):
-    def __init__(self, *args, **kwargs):
-        self.old_iterate = []
-        super().__init__(*args, **kwargs)
-
-    @torch.no_grad()
-    def extrapolation(self, _):
-        """Performs the extrapolation step and save a copy of the current parameters for the update step.
-        """
-        if self.old_iterate:
-            raise RuntimeError('Need to call step before calling extrapolation again.')
-        for group in self.param_groups:
-            for p in group['params']:
-                self.old_iterate.append(p.detach().clone())
-
-        # Move to extrapolation point
-        super().step()
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        if len(self.old_iterate) == 0:
-            raise RuntimeError('Need to call extrapolation before calling step.')
-
-        i = -1
-        for group in self.param_groups:
-            for p in group['params']:
-                i += 1
-                # Move back to the previous point
-                p.data = self.old_iterate[i].data
-        super().step()
-
-        # Free the old parameters
-        self.old_iterate.clear()
-
-
-class ExtraAdam(torch.optim.Adam):
-    def __init__(self, *args, **kwargs):
-        self.old_iterate = []
-        super().__init__(*args, **kwargs)
-
-    @torch.no_grad()
-    def extrapolation(self, _):
-        """Performs the extrapolation step and save a copy of the current parameters for the update step.
-        """
-        if self.old_iterate:
-            raise RuntimeError('Need to call step before calling extrapolation again.')
-        for group in self.param_groups:
-            for p in group['params']:
-                self.old_iterate.append(p.detach().clone())
-
-        # Move to extrapolation point
-        super().step()
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        if len(self.old_iterate) == 0:
-            raise RuntimeError('Need to call extrapolation before calling step.')
-
-        i = -1
-        for group in self.param_groups:
-            for p in group['params']:
-                i += 1
-                # Move back to the previous point
-                p.data = self.old_iterate[i].data
-        super().step()
-
-        # Free the old parameters
-        self.old_iterate.clear()
-
-
-class ExtraRMSProp(torch.optim.RMSprop):
-    def __init__(self, *args, **kwargs):
-        self.old_iterate = []
-        super().__init__(*args, **kwargs)
-
-    @torch.no_grad()
-    def extrapolation(self, _):
-        """Performs the extrapolation step and save a copy of the current parameters for the update step.
-        """
-        if self.old_iterate:
-            raise RuntimeError('Need to call step before calling extrapolation again.')
-        for group in self.param_groups:
-            for p in group['params']:
-                self.old_iterate.append(p.detach().clone())
-
-        # Move to extrapolation point
-        super().step()
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        if len(self.old_iterate) == 0:
-            raise RuntimeError('Need to call extrapolation before calling step.')
-
-        i = -1
-        for group in self.param_groups:
-            for p in group['params']:
-                i += 1
-                # Move back to the previous point
-                p.data = self.old_iterate[i].data
-        super().step()
-
-        # Free the old parameters
-        self.old_iterate.clear()
-
-
-def validate_defect(defect, multiplier):
-    if defect.is_sparse:
-        return defect.shape == multiplier.shape
-    else:
-        return defect.shape == multiplier(defect).shape
