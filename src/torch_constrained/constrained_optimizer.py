@@ -1,4 +1,5 @@
 import functools
+import warnings
 from typing import Type, Callable, Union
 
 import torch
@@ -13,16 +14,18 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             lr_x,
             lr_y,
             primal_parameters,
-            augmented_lagrangian=False,
+            augmented_lagrangian_coefficient=False,
             alternating=False,
             shrinkage: Union[bool, Callable] = False,
     ):
-        assert not augmented_lagrangian
-
         self.primal_optimizer = loss_optimizer(primal_parameters, lr_x)
         self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y)
 
+        if augmented_lagrangian_coefficient and (hasattr(self.primal_optimizer, "extrapolation") or hasattr(self.dual_optimizer, "extrapolation")):
+            warnings.warn("not sure if there is need to mix extrapolation and augmented lagrangian")
+
         self.dual_optimizer = None
+        self.augmented_lagrangian_coefficient = augmented_lagrangian_coefficient
         self.alternating = alternating
         self.shrinkage = shrinkage
         super().__init__(primal_parameters, {})
@@ -32,6 +35,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             loss_, eq_defect_, inequality_defect_ = closure()
             if self.shrinkage and eq_defect_:
                 eq_defect_ = [self.shrinkage(e) for e in eq_defect_]
+
             return loss_, eq_defect_, inequality_defect_
 
         loss, eq_defect, inequality_defect = closure_with_shrinkage()
@@ -71,11 +75,35 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.primal_optimizer.zero_grad()
         self.dual_optimizer.zero_grad()
         rhs = self.weighted_constraint(eq_defect, inequality_defect)
-        lagrangian = loss + sum(rhs)
+
+        if self.augmented_lagrangian_coefficient:
+            lagrangian = loss + self.augmented_lagrangian_coefficient * self.squared_sum_constraint(eq_defect, inequality_defect) + sum(rhs)
+        else:
+            lagrangian = loss + sum(rhs)
+
         lagrangian.backward()
         [m.weight.grad.mul_(-1) for m in self.equality_multipliers]
         [m.weight.grad.mul_(-1) for m in self.inequality_multipliers]
         return lagrangian.item()
+
+    def squared_sum_constraint(self, eq_defect, inequality_defect) -> torch.Tensor:
+        if eq_defect is not None:
+            constraint_sum = torch.zeros(1, device=eq_defect[0].device)
+        else:
+            constraint_sum = torch.zeros(1, device=inequality_defect[0].device)
+
+        if eq_defect is not None:
+            for hi in eq_defect:
+                if hi.is_sparse:
+                    hi = hi.coalesce().values()
+                constraint_sum += torch.sum(torch.square(hi))
+
+        if inequality_defect is not None:
+            for hi in inequality_defect:
+                if hi.is_sparse:
+                    hi = hi.coalesce().values()
+                constraint_sum += torch.sum(torch.square(hi))
+        return constraint_sum
 
     def weighted_constraint(self, eq_defect, inequality_defect) -> list:
         rhs = []
@@ -148,13 +176,11 @@ class _SparseMultiplier(torch.nn.Embedding):
         return self.weight.shape
 
     def forward(self, *args, **kwargs):
-        w = super().forward(*args, **kwargs)
-        raise NotImplementedError("WTF")
-        w = self.weight
+        batch_multipliers = super().forward(*args, **kwargs)
         if self.positive:
-            w.data = torch.relu(w).data
+            batch_multipliers.data = torch.relu(batch_multipliers).data
 
-        return w
+        return batch_multipliers
 
 
 class _DenseMultiplier(torch.nn.Module):
