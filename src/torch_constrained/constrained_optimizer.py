@@ -21,9 +21,6 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.primal_optimizer = loss_optimizer(primal_parameters, lr_x)
         self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y)
 
-        if augmented_lagrangian_coefficient and (hasattr(self.primal_optimizer, "extrapolation") or hasattr(self.dual_optimizer, "extrapolation")):
-            warnings.warn("not sure if there is need to mix extrapolation and augmented lagrangian")
-
         self.dual_optimizer = None
         self.augmented_lagrangian_coefficient = augmented_lagrangian_coefficient
         self.alternating = alternating
@@ -156,6 +153,8 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             *self.state["equality_multipliers"].parameters(),
             *self.state["inequality_multipliers"].parameters(),
         ])
+        if self.augmented_lagrangian_coefficient and (hasattr(self.primal_optimizer, "extrapolation") or hasattr(self.dual_optimizer, "extrapolation")):
+            warnings.warn("not sure if there is need to mix extrapolation and augmented lagrangian")
 
     @property
     def inequality_multipliers(self):
