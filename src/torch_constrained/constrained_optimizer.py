@@ -1,4 +1,5 @@
 import functools
+import inspect
 import warnings
 from typing import Type, Callable, Union
 
@@ -18,6 +19,9 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             alternating=False,
             shrinkage: Union[bool, Callable] = False,
     ):
+        if inspect.isgenerator(primal_parameters):
+            primal_parameters = list(primal_parameters)
+
         self.primal_optimizer = loss_optimizer(primal_parameters, lr_x)
         self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y)
 
