@@ -18,6 +18,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             augmented_lagrangian_coefficient=False,
             alternating=False,
             shrinkage: Union[bool, Callable] = False,
+            dual_dtype=None,
     ):
         if inspect.isgenerator(primal_parameters):
             primal_parameters = list(primal_parameters)
@@ -29,6 +30,8 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.augmented_lagrangian_coefficient = augmented_lagrangian_coefficient
         self.alternating = alternating
         self.shrinkage = shrinkage
+        self.dual_dtype = dual_dtype
+
         super().__init__(primal_parameters, {})
 
     def step(self, closure):
@@ -42,7 +45,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         loss, eq_defect, inequality_defect = closure_with_shrinkage()
 
         if not self.equality_multipliers and not self.inequality_multipliers:
-            self.init_dual_variables(eq_defect, inequality_defect)
+            self.init_dual_variables(eq_defect, inequality_defect, dtype=self.dual_dtype)
 
         assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.equality_multipliers)])
         assert inequality_defect is None or all([d.shape == m.shape for d, m in zip(inequality_defect, self.inequality_multipliers)])
@@ -128,7 +131,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
                     rhs.append(torch.einsum('bh,bh->', multiplier(hi), hi))
         return rhs
 
-    def init_dual_variables(self, equality_defect, inequality_defect):
+    def init_dual_variables(self, equality_defect, inequality_defect, dtype=None):
         equality_multipliers = []
         inequality_multipliers = []
 
@@ -136,18 +139,18 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             for hi in equality_defect:
                 assert hi.ndim == 2, f"2d shape (batch_size, defect_size) required, found {hi.ndim}"
                 if hi.is_sparse:
-                    m_i = _SparseMultiplier(hi)
+                    m_i = _SparseMultiplier(hi, dtype=dtype)
                 else:
-                    m_i = _DenseMultiplier(hi)
+                    m_i = _DenseMultiplier(hi, dtype=dtype)
                 equality_multipliers.append(m_i)
 
         if inequality_defect is not None:
             for hi in inequality_defect:
                 assert hi.ndim == 2, "shape (batch_size, *) required"
                 if hi.is_sparse:
-                    m_i = _SparseMultiplier(hi, positive=True)
+                    m_i = _SparseMultiplier(hi, dtype=dtype, positive=True)
                 else:
-                    m_i = _DenseMultiplier(hi, positive=True)
+                    m_i = _DenseMultiplier(hi, dtype=dtype, positive=True)
                 inequality_multipliers.append(m_i)
 
         self.state["equality_multipliers"] = torch.nn.ModuleList(equality_multipliers)
@@ -170,8 +173,8 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
 
 class _SparseMultiplier(torch.nn.Embedding):
-    def __init__(self, hi, positive=False):
-        super().__init__(*hi.shape, _weight=torch.zeros(hi.shape, device=hi.device), sparse=True)
+    def __init__(self, hi, *, positive=False, dtype=None):
+        super().__init__(*hi.shape, _weight=torch.zeros(hi.shape, device=hi.device, dtype=dtype), sparse=True)
         self.positive = positive
 
     @property
@@ -187,9 +190,9 @@ class _SparseMultiplier(torch.nn.Embedding):
 
 
 class _DenseMultiplier(torch.nn.Module):
-    def __init__(self, hi, positive=False):
+    def __init__(self, hi, *, positive=False, dtype=None):
         super().__init__()
-        self.weight = torch.nn.Parameter(torch.zeros(hi.shape, device=hi.device))
+        self.weight = torch.nn.Parameter(torch.zeros(hi.shape, device=hi.device, dtype=dtype))
         self.positive = positive
 
     @property
