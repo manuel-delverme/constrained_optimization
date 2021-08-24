@@ -31,7 +31,6 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.shrinkage = shrinkage
         super().__init__(primal_parameters, {})
 
-    @torch.no_grad()
     def step(self, closure):
         def closure_with_shrinkage():
             loss_, eq_defect_, inequality_defect_ = closure()
