@@ -117,18 +117,18 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
                 if hi.is_sparse:
                     hi = hi.coalesce()
                     indices = hi.indices().squeeze(0)
-                    rhs.append(torch.einsum('bh,bh->', multiplier(indices), hi.values()))
+                    rhs.append(torch.einsum('bh,bh->', multiplier(indices).to(dtype=hi.dtype), hi.values()))
                 else:
-                    rhs.append(torch.einsum('bh,bh->', multiplier(hi), hi))
+                    rhs.append(torch.einsum('bh,bh->', multiplier(hi).to(dtype=hi.dtype), hi))
 
         if inequality_defect is not None:
             for multiplier, hi in zip(self.inequality_multipliers, inequality_defect):
                 if hi.is_sparse:
                     hi = hi.coalesce()
                     indices = hi.indices().squeeze(0)
-                    rhs.append(torch.einsum('bh,bh->', multiplier(indices), hi.values()))
+                    rhs.append(torch.einsum('bh,bh->', multiplier(indices).to(dtype=hi.dtype), hi.values()))
                 else:
-                    rhs.append(torch.einsum('bh,bh->', multiplier(hi), hi))
+                    rhs.append(torch.einsum('bh,bh->', multiplier(hi).to(dtype=hi.dtype), hi))
         return rhs
 
     def init_dual_variables(self, equality_defect, inequality_defect, dtype=None):
