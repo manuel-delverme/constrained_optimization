@@ -1,7 +1,7 @@
 import functools
 import inspect
 import warnings
-from typing import Type, Callable, Union
+from typing import Type, Callable, Optional
 
 import torch
 import torch.nn
@@ -17,7 +17,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             primal_parameters,
             augmented_lagrangian_coefficient=False,
             alternating=False,
-            shrinkage: Union[bool, Callable] = False,
+            shrinkage: Optional[Callable] = None,
             dual_dtype=None,
     ):
         if inspect.isgenerator(primal_parameters):
@@ -37,7 +37,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
     def step(self, closure):
         def closure_with_shrinkage():
             loss_, eq_defect_, inequality_defect_ = closure()
-            if self.shrinkage and eq_defect_:
+            if self.shrinkage is not None and eq_defect_:
                 eq_defect_ = [self.shrinkage(e) for e in eq_defect_]
 
             return loss_, eq_defect_, inequality_defect_
@@ -73,7 +73,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             lagrangian_ = self.minmax_backward(loss_, eq_defect_, inequality_defect_)
         self.dual_optimizer.step()
 
-        return lagrangian
+        return lagrangian, loss, eq_defect, inequality_defect
 
     def minmax_backward(self, loss, eq_defect, inequality_defect):
         self.primal_optimizer.zero_grad()
