@@ -1,16 +1,16 @@
 # from unittest.mock import patch
 import torch
-import torch_constrained
 
 import HockSchittkowski
 
-
-# import torch_constrained
+import os, sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+import src.torch_constrained as tc
 
 def load_HockSchittkowski_models():
     for name, model in HockSchittkowski.__dict__.items():
         if isinstance(model, type) and issubclass(model, HockSchittkowski.Hs) and model != HockSchittkowski.Hs:
-            yield model.objective_function, model.constraints, model.optimal_solution, model.initialize
+            yield name, model, model.objective_function, model.constraints, model.optimal_solution, model.initialize
 
 
 benchmarks = list(load_HockSchittkowski_models())
@@ -38,19 +38,32 @@ benchmarks = list(load_HockSchittkowski_models())
 #         )
 #         _ = train.train()
 
-for objective_function, constraints, optimal_solution, initialize in benchmarks:
+for name, model, objective_function, constraints, optimal_solution, initialize in benchmarks:
     x, = initialize()
+    objective_fn = lambda u: - objective_function(u)
     x.requires_grad = True
-    eta = 0.05
+    eta = 0.005
 
-    optimizer = torch_constrained.ConstrainedOptimizer(
-        torch_constrained.ExtraAdagrad,
-        torch_constrained.ExtraAdagrad,
-        lr_x=eta,
-        lr_y=eta,
+    optimizer = tc.ConstrainedOptimizer(
+        torch.optim.Adam,
+        torch.optim.Adam,
+        # tc.ExtraAdagrad,
+        # tc.ExtraAdagrad,
+        lr_primal=eta,
+        lr_dual=eta,
         primal_parameters=[x, ],
     )
-    for _ in range(100):
-        optimizer.step(lambda: (-objective_function(x), [constraints(x).reshape(-1, 1), ], None))
-        print(x.detach().numpy(), objective_function(x).item(), constraints(x).item())
-    assert torch.allclose(x.item(), optimal_solution)
+
+    def closure():
+        return {'loss': objective_fn(x),
+                'eq_defect': model.constraints(x),
+                'ineq_defect': None,
+                'misc': None}
+
+    print('Running', name)
+    for _ in range(2000):
+        optimizer.step(closure)
+        if _ % 500 == 0:
+            print(name, [_(x).data.numpy() for _ in [lambda u: x, objective_fn, constraints]])
+
+    # assert torch.allclose(x, optimal_solution.float(), rtol=1e-2)
