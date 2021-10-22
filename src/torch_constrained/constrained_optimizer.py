@@ -19,12 +19,14 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             alternating=False,
             shrinkage: Optional[Callable] = None,
             dual_dtype=None,
+            primal_kwargs={},
+            dual_kwargs={},
     ):
         if inspect.isgenerator(primal_parameters):
             primal_parameters = list(primal_parameters)
 
-        self.primal_optimizer = loss_optimizer(primal_parameters, lr_x)
-        self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y)
+        self.primal_optimizer = loss_optimizer(primal_parameters, lr_x, **primal_kwargs)
+        self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y, **dual_kwargs)
 
         self.dual_optimizer = None
         self.augmented_lagrangian_coefficient = augmented_lagrangian_coefficient
