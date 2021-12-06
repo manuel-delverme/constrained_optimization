@@ -1,38 +1,65 @@
-import functools
 import inspect
 import warnings
-from typing import Type, Callable, Optional
+from functools import partial
+from typing import Type, List, Callable, Optional
 
 import torch
 from .multipliers import _SparseMultiplier, _DenseMultiplier
 
-
 class ConstrainedOptimizer(torch.optim.Optimizer):
     def __init__(
             self,
-            loss_optimizer: Type[torch.optim.Optimizer],
-            constraint_optimizer: Type[torch.optim.Optimizer],
-            lr_x,
-            lr_y,
+            primal_optim_class: Type[torch.optim.Optimizer],
+            lr_primal: float,
             primal_parameters,
+            dual_optim_class: Optional[Type[torch.optim.Optimizer]]=None,
+            lr_dual: Optional[float]=0.,
+            ineq_init: Optional[List[torch.Tensor]]=None,
+            eq_init: Optional[List[torch.Tensor]]=None,
             augmented_lagrangian_coefficient=False,
             alternating=False,
-            shrinkage: Optional[Callable] = None,
-            dual_dtype=None,
-            primal_kwargs={},
-            dual_kwargs={},
-    ):
+            shrinkage: Optional[Callable]=None,
+            dual_reset=False,
+            verbose=False,
+        ):
+        
+        # Instantiate user-specified primal optimizer
         if inspect.isgenerator(primal_parameters):
             primal_parameters = list(primal_parameters)
+        self.primal_optimizer = primal_optim_class(primal_parameters, lr_primal)
+        self.primal_parameters = primal_parameters
 
-        self.primal_optimizer = loss_optimizer(primal_parameters, lr_x, **primal_kwargs)
-        self.dual_optimizer_class = functools.partial(constraint_optimizer, lr=lr_y, **dual_kwargs)
+        # Initialization values for the dual variables
+        self.dual_init_done = False
+        self.ineq_init = ineq_init
+        self.eq_init = eq_init
 
-        self.dual_optimizer = None
-        self.augmented_lagrangian_coefficient = augmented_lagrangian_coefficient
-        self.alternating = alternating
-        self.shrinkage = shrinkage
-        self.dual_dtype = dual_dtype
+        # Create flag for execution in un-constrained setting
+        self.is_constrained = dual_optim_class is not None 
+
+        if self.is_constrained:
+            # The dual optimizer is instantiated in 'init_dual_variables'.
+            self.dual_optimizer_class = partial(dual_optim_class, lr=lr_dual)
+            self.dual_reset = dual_reset
+
+            # Other optimization and lagrangian options
+            self.augmented_lagrangian_coefficient = augmented_lagrangian_coefficient
+            self.alternating = alternating
+            self.shrinkage = shrinkage
+        else:
+            print('Unconstrained Execution')
+            if lr_dual != 0.:
+                warnings.warn("""Did not provide dual optimizer but learning rate is non-zero.
+                              Running with no dual optimizer and ignoring learning rate value.""")
+            self.dual_optimizer_class = None
+            self.dual_reset = False
+
+            # Other optimization and lagrangian options
+            self.augmented_lagrangian_coefficient = 0.
+            self.alternating = False
+            self.shrinkage = 0.
+        
+        self.verbose = verbose 
 
         super().__init__(primal_parameters, {})
 
@@ -127,41 +154,62 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
                 
         return rhs
 
-    def init_dual_variables(self, eq_defect, ineq_defect, dtype=None):
-        eq_multipliers = []
-        ineq_multipliers = []
+    def init_dual_variables(self, 
+                            eq_defect: Optional[List[torch.Tensor]],
+                            ineq_defect: Optional[List[torch.Tensor]]
+                            ):
+        """Initialize dual variables and optimizers given list of equality and
+        inequality defects.
 
-        if eq_defect is not None:
-            for hi in eq_defect:
-                assert hi.ndim == 2, f"2d shape (batch_size, defect_size) required, found {hi.ndim}"
-                if hi.is_sparse:
-                    m_i = _SparseMultiplier(hi, dtype=dtype)
-                else:
-                    m_i = _DenseMultiplier(hi, dtype=dtype)
-                eq_multipliers.append(m_i)
+        Args:
+            eq_defect: Defects for equality constraints 
+            ineq_defect: Defects for inequality constraints.
+        """
 
-        if ineq_defect is not None:
-            for hi in ineq_defect:
-                assert hi.ndim == 2, "shape (batch_size, *) required"
-                if hi.is_sparse:
-                    m_i = _SparseMultiplier(hi, dtype=dtype, positive=True)
-                else:
-                    m_i = _DenseMultiplier(hi, dtype=dtype, positive=True)
-                ineq_multipliers.append(m_i)
+        if self.verbose: print('Initializing dual variables')
 
-        self.state["eq_multipliers"] = torch.nn.ModuleList(eq_multipliers)
-        self.state["ineq_multipliers"] = torch.nn.ModuleList(ineq_multipliers)
+        aux_dict = {'eq': eq_defect, 'ineq': ineq_defect}
+        aux_init = {'eq': self.eq_init, 'ineq': self.ineq_init}
 
-        self.dual_optimizer = self.dual_optimizer_class([
-            *self.state["eq_multipliers"].parameters(),
-            *self.state["ineq_multipliers"].parameters(),
-        ])
-        if self.augmented_lagrangian_coefficient and (hasattr(self.primal_optimizer, "extrapolation") or hasattr(self.dual_optimizer, "extrapolation")):
-            warnings.warn("not sure if there is need to mix extrapolation and augmented lagrangian")
+        for const_name, const_defects in aux_dict.items():
+
+            multipliers = []
+            if const_defects is not None:
+                
+                # Assert provided inits match number of constraints 
+                assert aux_init[const_name] is None or len(aux_init[const_name]) == len(const_defects)
+                
+                # For each constraint type, create a multiplier for each constraint
+                for i, defect in enumerate(const_defects):
+                    # Set user-specified init values, else default to zeros
+                    if aux_init[const_name] is None:
+                        init_val = torch.zeros_like(defect)
+                    else:
+                        init_val = torch.tensor(aux_init[const_name][i], device=defect.device)
+                    
+                    mult_class = _SparseMultiplier if defect.is_sparse else _DenseMultiplier
+                    # Force positivity if dealing with inequality
+                    mult_i = mult_class(init_val, positive=const_name == "ineq")
+                    multipliers.append(mult_i)
+
+            # Join multipliers per constraint type into one module list
+            self.state[const_name + "_multipliers"] = torch.nn.ModuleList(multipliers)
+        
+        if self.is_constrained:
+            # Initialize dual optimizer in charge of newly created dual parameters
+            self.dual_optimizer = self.dual_optimizer_class([
+                *self.state["eq_multipliers"].parameters(),
+                *self.state["ineq_multipliers"].parameters(),
+                ])
+        else:
+            self.dual_optimizer = None
+
+        # Mark dual instantiation an init as complete
+        self.dual_init_done = True
 
     def eval_multipliers(self, mult_type='ineq'):            
         return [_.forward().item() for _ in self.state[mult_type + "_multipliers"]]
-    
+
     @property
     def ineq_multipliers(self):
         return self.state["ineq_multipliers"]
@@ -182,7 +230,4 @@ def constraint_dot(defect, multiplier):
         return torch.sum(multiplier().to(dtype=defect.dtype) * defect) 
         
 def validate_defect(defect, multiplier):
-    if defect.is_sparse:
-        return defect.shape == multiplier.shape
-    else:
-        return defect.shape == multiplier(defect).shape
+    return defect.shape == multiplier.shape
