@@ -25,3 +25,7 @@ pip install -r requirements-dev.txt
 pre-commit install
 git config --bool flake8.strict true
 ```
+### Style guide
+
+https://google.github.io/styleguide/pyguide.html
+https://www.python.org/dev/peps/pep-0008/
