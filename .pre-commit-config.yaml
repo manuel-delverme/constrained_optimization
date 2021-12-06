@@ -1,0 +1,10 @@
+repos:
+- repo: https://gitlab.com/pycqa/flake8
+  rev: '3.8.4'
+  hooks:
+  -   id: flake8
+- repo: git@github.com:pre-commit/mirrors-yapf.git
+  rev: 'v0.31.0'
+  hooks:
+    - id: yapf
+      args: ['--parallel', '--in-place']
