@@ -93,22 +93,20 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         return lagrangian.item()
 
     def squared_sum_constraint(self, eq_defect, ineq_defect) -> torch.Tensor:
+        ''' Compute quadratic penalty for augmented Lagrangian
+        '''
         if eq_defect is not None:
             constraint_sum = torch.zeros(1, device=eq_defect[0].device)
         else:
             constraint_sum = torch.zeros(1, device=ineq_defect[0].device)
 
-        if eq_defect is not None:
-            for hi in eq_defect:
-                if hi.is_sparse:
-                    hi = hi.coalesce().values()
-                constraint_sum += torch.sum(torch.square(hi))
+        for defect in [eq_defect, ineq_defect]:
+            if defect is not None:
+                for hi in defect:
+                    if hi.is_sparse:
+                        hi = hi.coalesce().values()
+                    constraint_sum += torch.sum(torch.square(hi))
 
-        if ineq_defect is not None:
-            for hi in ineq_defect:
-                if hi.is_sparse:
-                    hi = hi.coalesce().values()
-                constraint_sum += torch.sum(torch.square(hi))
         return constraint_sum
 
     def weighted_constraint(self, eq_defect, ineq_defect) -> list:
