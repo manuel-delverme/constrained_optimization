@@ -1,7 +1,7 @@
 import inspect
 import warnings
 from functools import partial
-from typing import Type, List, Callable, Optional
+from typing import Type, List, Callable, Optional, Dict
 
 import torch
 from .multipliers import _SparseMultiplier, _DenseMultiplier
@@ -10,13 +10,13 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
     def __init__(
             self,
             primal_optim_class: Type[torch.optim.Optimizer],
-            lr_primal: float,
+            primal_kwargs: Dict,
             primal_parameters,
             dual_optim_class: Optional[Type[torch.optim.Optimizer]]=None,
-            lr_dual: Optional[float]=0.,
+            dual_kwargs: Optional[Dict]=None,
             ineq_init: Optional[List[torch.Tensor]]=None,
             eq_init: Optional[List[torch.Tensor]]=None,
-            augmented_lagrangian_coefficient=False,
+            augmented_lagrangian_coeff=False,
             alternating=False,
             shrinkage: Optional[Callable]=None,
             dual_reset=False,
@@ -26,7 +26,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         # Instantiate user-specified primal optimizer
         if inspect.isgenerator(primal_parameters):
             primal_parameters = list(primal_parameters)
-        self.primal_optimizer = primal_optim_class(primal_parameters, lr_primal)
+        self.primal_optimizer = primal_optim_class(primal_parameters, **primal_kwargs)
         self.primal_parameters = primal_parameters
 
         # Initialization values for the dual variables
@@ -38,24 +38,24 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.is_constrained = dual_optim_class is not None 
 
         if self.is_constrained:
-            # The dual optimizer is instantiated in 'init_dual_variables'.
-            self.dual_optimizer_class = partial(dual_optim_class, lr=lr_dual)
+            # Important: the dual optimizer is instantiated in 'init_dual_variables'.
+            self.dual_optimizer_class = partial(dual_optim_class, **dual_kwargs)
             self.dual_reset = dual_reset
 
             # Other optimization and lagrangian options
-            self.augmented_lagrangian_coefficient = augmented_lagrangian_coefficient
+            self.augmented_lagrangian_coeff = augmented_lagrangian_coeff
             self.alternating = alternating
             self.shrinkage = shrinkage
         else:
             print('Unconstrained Execution')
-            if lr_dual != 0.:
-                warnings.warn("""Did not provide dual optimizer but learning rate is non-zero.
-                              Running with no dual optimizer and ignoring learning rate value.""")
+            if len(dual_kwargs) != 0:
+                warnings.warn("""Did not provide dual optimizer dual kwargs is non empty.
+                              Running with no dual optimizer and ignoring hyper-parameters.""")
             self.dual_optimizer_class = None
             self.dual_reset = False
 
             # Other optimization and lagrangian options
-            self.augmented_lagrangian_coefficient = 0.
+            self.augmented_lagrangian_coeff = 0.
             self.alternating = False
             self.shrinkage = 0.
         
@@ -169,9 +169,9 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         lagrangian = loss + sum(rhs) 
 
         # If using augmented Lagrangian, add squared sum of constraints
-        if self.augmented_lagrangian_coefficient > 0:
+        if self.augmented_lagrangian_coeff > 0:
             ssc = self.squared_sum_constraint(eq_defect, ineq_defect)
-            lagrangian += self.augmented_lagrangian_coefficient * ssc
+            lagrangian += self.augmented_lagrangian_coeff * ssc
         
         return lagrangian
 

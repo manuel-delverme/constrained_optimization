@@ -40,10 +40,10 @@ def closure():
 
 optimizer = tc.ConstrainedOptimizer(
         primal_optim_class=tc.OPTIM_DICT['Adam'],
-        lr_primal=1e-3,
+        primal_kwargs={'lr': 1e-3},
         primal_parameters=model.parameters(),
         dual_optim_class=tc.OPTIM_DICT['Adam'],
-        lr_dual=1e-1,
+        dual_kwargs={'lr': 1e-1},
         alternating=False,
         dual_reset=True
     )
