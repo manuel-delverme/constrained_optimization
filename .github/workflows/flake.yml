@@ -3,10 +3,10 @@ name: flake
 on:
   push:
     branches:
-      - flake8
+      - master
   pull_request:
     branches:
-      - flake8
+      - master
 
 jobs:
   build:
