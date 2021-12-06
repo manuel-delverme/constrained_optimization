@@ -46,10 +46,10 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         loss, eq_defect, ineq_defect = closure_with_shrinkage()
 
-        if not self.equality_multipliers and not self.ineq_multipliers:
+        if not self.eq_multipliers and not self.ineq_multipliers:
             self.init_dual_variables(eq_defect, ineq_defect, dtype=self.dual_dtype)
 
-        assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.equality_multipliers)])
+        assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.eq_multipliers)])
         assert ineq_defect is None or all([d.shape == m.shape for d, m in zip(ineq_defect, self.ineq_multipliers)])
 
         lagrangian = self.minmax_backward(loss, eq_defect, ineq_defect)
@@ -88,7 +88,7 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             lagrangian = loss + sum(rhs)
 
         lagrangian.backward()
-        [m.weight.grad.mul_(-1) for m in self.equality_multipliers]
+        [m.weight.grad.mul_(-1) for m in self.eq_multipliers]
         [m.weight.grad.mul_(-1) for m in self.ineq_multipliers]
         return lagrangian.item()
 
@@ -112,39 +112,35 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         return constraint_sum
 
     def weighted_constraint(self, eq_defect, ineq_defect) -> list:
-        rhs = []
+        """Compute contribution of the constraints, weighted by current multiplier values
 
+        Returns:
+            rhs: List of contribution per constraint to the Lagrangian
+        """
+        rhs = []
+        
         if eq_defect is not None:
-            for multiplier, hi in zip(self.equality_multipliers, eq_defect):
-                if hi.is_sparse:
-                    hi = hi.coalesce()
-                    indices = hi.indices().squeeze(0)
-                    rhs.append(torch.einsum('bh,bh->', multiplier(indices).to(dtype=hi.dtype), hi.values()))
-                else:
-                    rhs.append(torch.einsum('bh,bh->', multiplier(hi).to(dtype=hi.dtype), hi))
+            for multiplier, hi in zip(self.eq_multipliers, eq_defect):
+                rhs.append(constraint_dot(hi, multiplier))
 
         if ineq_defect is not None:
             for multiplier, hi in zip(self.ineq_multipliers, ineq_defect):
-                if hi.is_sparse:
-                    hi = hi.coalesce()
-                    indices = hi.indices().squeeze(0)
-                    rhs.append(torch.einsum('bh,bh->', multiplier(indices).to(dtype=hi.dtype), hi.values()))
-                else:
-                    rhs.append(torch.einsum('bh,bh->', multiplier(hi).to(dtype=hi.dtype), hi))
+                rhs.append(constraint_dot(hi, multiplier))
+                
         return rhs
 
-    def init_dual_variables(self, equality_defect, ineq_defect, dtype=None):
-        equality_multipliers = []
+    def init_dual_variables(self, eq_defect, ineq_defect, dtype=None):
+        eq_multipliers = []
         ineq_multipliers = []
 
-        if equality_defect is not None:
-            for hi in equality_defect:
+        if eq_defect is not None:
+            for hi in eq_defect:
                 assert hi.ndim == 2, f"2d shape (batch_size, defect_size) required, found {hi.ndim}"
                 if hi.is_sparse:
                     m_i = _SparseMultiplier(hi, dtype=dtype)
                 else:
                     m_i = _DenseMultiplier(hi, dtype=dtype)
-                equality_multipliers.append(m_i)
+                eq_multipliers.append(m_i)
 
         if ineq_defect is not None:
             for hi in ineq_defect:
@@ -155,25 +151,38 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
                     m_i = _DenseMultiplier(hi, dtype=dtype, positive=True)
                 ineq_multipliers.append(m_i)
 
-        self.state["equality_multipliers"] = torch.nn.ModuleList(equality_multipliers)
+        self.state["eq_multipliers"] = torch.nn.ModuleList(eq_multipliers)
         self.state["ineq_multipliers"] = torch.nn.ModuleList(ineq_multipliers)
 
         self.dual_optimizer = self.dual_optimizer_class([
-            *self.state["equality_multipliers"].parameters(),
+            *self.state["eq_multipliers"].parameters(),
             *self.state["ineq_multipliers"].parameters(),
         ])
         if self.augmented_lagrangian_coefficient and (hasattr(self.primal_optimizer, "extrapolation") or hasattr(self.dual_optimizer, "extrapolation")):
             warnings.warn("not sure if there is need to mix extrapolation and augmented lagrangian")
 
+    def eval_multipliers(self, mult_type='ineq'):            
+        return [_.forward().item() for _ in self.state[mult_type + "_multipliers"]]
+    
     @property
     def ineq_multipliers(self):
         return self.state["ineq_multipliers"]
 
     @property
-    def equality_multipliers(self):
-        return self.state["equality_multipliers"]
+    def eq_multipliers(self):
+        return self.state["eq_multipliers"]
 
 
+def constraint_dot(defect, multiplier):
+    """Compute constraint contribution for given (potent. sparse) defect and multiplier
+    """
+    if defect.is_sparse:
+        hi = defect.coalesce()
+        indices = hi.indices().squeeze(0)
+        return torch.einsum('bh,bh->', multiplier(indices).to(dtype=hi.dtype), hi.values())
+    else:
+        return torch.sum(multiplier().to(dtype=defect.dtype) * defect) 
+        
 def validate_defect(defect, multiplier):
     if defect.is_sparse:
         return defect.shape == multiplier.shape
