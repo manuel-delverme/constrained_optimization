@@ -65,59 +65,115 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
     def step(self, closure):
         def closure_with_shrinkage():
-            loss_, eq_defect_, ineq_defect_ = closure()
-            if self.shrinkage is not None and eq_defect_:
-                eq_defect_ = [self.shrinkage(e) for e in eq_defect_]
+            closure_dict = closure()
 
-            return loss_, eq_defect_, ineq_defect_
+            # JGP TODO: Deactivated this. What is this supposed to do?
+            # if self.shrinkage is not None and closure_dict['eq_defect']:
+            #     closure_dict['eq_defect'] = [self.shrinkage(e) for e in closure_dict['eq_defect']]
 
-        loss, eq_defect, ineq_defect = closure_with_shrinkage()
+            return closure_dict
 
-        if not self.eq_multipliers and not self.ineq_multipliers:
-            self.init_dual_variables(eq_defect, ineq_defect, dtype=self.dual_dtype)
+        closure_dict = closure_with_shrinkage()
+        loss, eq_defect, ineq_defect = [closure_dict[_] for _ in ['loss', 'eq_defect', 'ineq_defect']]
 
-        assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.eq_multipliers)])
-        assert ineq_defect is None or all([d.shape == m.shape for d, m in zip(ineq_defect, self.ineq_multipliers)])
+        if not self.dual_init_done and not self.eq_multipliers and not self.ineq_multipliers:
+            # If not done before, instantiate and initialize dual variables
+            # This step also instantiates dual_optimizer, if necessary
+            self.init_dual_variables(eq_defect, ineq_defect)
 
-        lagrangian = self.minmax_backward(loss, eq_defect, ineq_defect)
+            # Ensure multiplier shapes match those of the defects
+            assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.eq_multipliers)])
+            assert ineq_defect is None or all([d.shape == m.shape for d, m in zip(ineq_defect, self.ineq_multipliers)])
 
+        # Compute lagrangian value based on current loss and values of multipliers
+        lagrangian = self.lagrangian_backward(loss, eq_defect, ineq_defect)
+        closure_dict['lagrangian'] = lagrangian
+        
+        # JGP TODO: Why was this being applied on the object loss? 
+        # Shouldn't this be called with input lagrangian? Otherwise subsequent
+        # extrapolation backprops will ignore constraints.
+        self.run_optimizers_step(lagrangian, closure_with_shrinkage)
+        
+        return closure_dict
+
+    def run_optimizers_step(self, loss, closure_fn):
+        
         should_back_prop = False
         if hasattr(self.primal_optimizer, "extrapolation"):
             self.primal_optimizer.extrapolation(loss)
             should_back_prop = True
 
-        # RYAN: this is not necessary
-        if not self.alternating and hasattr(self.dual_optimizer, "extrapolation"):
+        if self.is_constrained and not self.alternating and hasattr(self.dual_optimizer, "extrapolation"):
             self.dual_optimizer.extrapolation(loss)
             should_back_prop = True
 
         if should_back_prop:
-            loss_, eq_defect_, ineq_defect_ = closure_with_shrinkage()
-            lagrangian_ = self.minmax_backward(loss_, eq_defect_, ineq_defect_)
+            closure_dict_ = closure_fn()
+            in_tuple = (closure_dict_[_] for _ in ['loss', 'eq_defect', 'ineq_defect'])
+            lagrangian_ = self.lagrangian_backward(*in_tuple)
 
         self.primal_optimizer.step()
 
-        if self.alternating:
-            loss_, eq_defect_, ineq_defect_ = closure_with_shrinkage()
-            lagrangian_ = self.minmax_backward(loss_, eq_defect_, ineq_defect_)
-        self.dual_optimizer.step()
+        if self.is_constrained and self.alternating:
+            # Once having updated primal parameters, re-compute gradient
+            # Skip gradient wrt model parameters to avoid wasteful computation
+            # as we only need gradient wrt multipliers.
+            closure_dict_ = closure_fn()
+            in_tuple = (closure_dict_[_] for _ in ['loss', 'eq_defect', 'ineq_defect'])
+            lagrangian_ = self.lagrangian_backward(*in_tuple, ignore_primal=True)
+        
+        if self.dual_reset:
+            # 'Reset' value of inequality multipliers to zero as soon as solution becomes feasible 
+            for multiplier in self.ineq_multipliers:
+                # Call to lagrangian_backward has already flipped sign
+                # Currently positive sign means original defect is negative = feasible
 
-        return lagrangian, loss, eq_defect, ineq_defect
+                if multiplier.weight.grad.item() > 0:
+                    multiplier.weight.grad *= 0
+                    multiplier.weight.data *= 0
 
-    def minmax_backward(self, loss, eq_defect, ineq_defect):
+        if self.is_constrained:
+            self.dual_optimizer.step()
+
+    def lagrangian_backward(self, loss, eq_defect, ineq_defect, ignore_primal=False):
+        """Compute Lagrangian and backward pass
+
+        """
         self.primal_optimizer.zero_grad()
-        self.dual_optimizer.zero_grad()
-        rhs = self.weighted_constraint(eq_defect, ineq_defect)
 
-        if self.augmented_lagrangian_coefficient:
-            lagrangian = loss + self.augmented_lagrangian_coefficient * self.squared_sum_constraint(eq_defect, ineq_defect) + sum(rhs)
+        if self.is_constrained: self.dual_optimizer.zero_grad()
+        
+        lagrangian = self.compute_lagrangian(loss, eq_defect, ineq_defect)
+
+        # Compute gradients
+        if ignore_primal and self.is_constrained:
+                mult_params = [m.weight for m in self.eq_multipliers]
+                mult_params += [m.weight for m in self.ineq_multipliers]
+                lagrangian.backward(inputs=mult_params)
         else:
-            lagrangian = loss + sum(rhs)
+            lagrangian.backward()
 
-        lagrangian.backward()
-        [m.weight.grad.mul_(-1) for m in self.eq_multipliers]
-        [m.weight.grad.mul_(-1) for m in self.ineq_multipliers]
+        # Flip gradients for dual variables to perform ascent
+        if self.is_constrained:
+            [m.weight.grad.mul_(-1) for m in self.eq_multipliers]
+            [m.weight.grad.mul_(-1) for m in self.ineq_multipliers]
+
         return lagrangian.item()
+
+    def compute_lagrangian(self, loss, eq_defect, ineq_defect):
+        
+        # Compute contribution of the constraints, weighted by current multiplier values
+        rhs = self.weighted_constraint(eq_defect, ineq_defect)
+        
+        # Lagrangian = loss + dot(multipliers, defects)
+        lagrangian = loss + sum(rhs) 
+
+        # If using augmented Lagrangian, add squared sum of constraints
+        if self.augmented_lagrangian_coefficient > 0:
+            ssc = self.squared_sum_constraint(eq_defect, ineq_defect)
+            lagrangian += self.augmented_lagrangian_coefficient * ssc
+        
+        return lagrangian
 
     def squared_sum_constraint(self, eq_defect, ineq_defect) -> torch.Tensor:
         ''' Compute quadratic penalty for augmented Lagrangian
