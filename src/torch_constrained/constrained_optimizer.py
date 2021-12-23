@@ -109,18 +109,18 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
                 if hi.is_sparse:
                     hi = hi.coalesce()
                     indices = hi.indices().squeeze(0)
-                    rhs.append(torch.einsum('bh,bh->', multiplier(indices).to(dtype=hi.dtype), hi.values()))
+                    rhs.append(torch.einsum('sd,sd->', multiplier(indices).to(dtype=hi.dtype), hi.values()))
                 else:
-                    rhs.append(torch.einsum('bh,bh->', multiplier(hi).to(dtype=hi.dtype), hi))
+                    rhs.append(torch.einsum('d,d->', multiplier(hi).to(dtype=hi.dtype), hi))
 
         if inequality_defect is not None:
             for multiplier, hi in zip(self.inequality_multipliers, inequality_defect):
                 if hi.is_sparse:
                     hi = hi.coalesce()
                     indices = hi.indices().squeeze(0)
-                    rhs.append(torch.einsum('bh,bh->', multiplier(indices).to(dtype=hi.dtype), hi.values()))
+                    rhs.append(torch.einsum('sd,sd->', multiplier(indices).to(dtype=hi.dtype), hi.values()))
                 else:
-                    rhs.append(torch.einsum('bh,bh->', multiplier(hi).to(dtype=hi.dtype), hi))
+                    rhs.append(torch.einsum('d,d->', multiplier(hi).to(dtype=hi.dtype), hi))
         return rhs
 
     def init_dual_variables(self, equality_defect, inequality_defect, dtype=None):
@@ -129,19 +129,21 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
 
         if equality_defect is not None:
             for hi in equality_defect:
-                assert hi.ndim == 2, f"2d shape (batch_size, defect_size) required, found {hi.ndim}"
                 if hi.is_sparse:
+                    assert hi.ndim == 2, f"Sparse defects are supposed to be 2d (sparse, non-sparse), found {hi.ndim}"
                     m_i = _SparseMultiplier(hi, dtype=dtype)
                 else:
+                    assert hi.ndim == 1, f"1d defect is required, flatten it, found {hi.ndim}"
                     m_i = _DenseMultiplier(hi, dtype=dtype)
                 equality_multipliers.append(m_i)
 
         if inequality_defect is not None:
             for hi in inequality_defect:
-                assert hi.ndim == 2, "shape (batch_size, *) required"
                 if hi.is_sparse:
+                    assert hi.ndim == 2, f"Sparse defects are supposed to be 2d (sparse, non-sparse), found {hi.ndim}"
                     m_i = _SparseMultiplier(hi, dtype=dtype, positive=True)
                 else:
+                    assert hi.ndim == 1, f"1d defect is required, flatten it, found {hi.ndim}"
                     m_i = _DenseMultiplier(hi, dtype=dtype, positive=True)
                 inequality_multipliers.append(m_i)
 
