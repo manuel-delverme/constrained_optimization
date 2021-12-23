@@ -1,7 +1,6 @@
 import functools
 import inspect
-import warnings
-from typing import Type, Callable, Optional
+from typing import Type
 
 import torch
 import torch.nn
@@ -17,7 +16,6 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             primal_parameters,
             augmented_lagrangian_coefficient=False,
             alternating=False,
-            shrinkage: Optional[Callable] = None,
             dual_dtype=None,
             primal_kwargs={},
             dual_kwargs={},
@@ -31,20 +29,12 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         self.dual_optimizer = None
         self.augmented_lagrangian_coefficient = augmented_lagrangian_coefficient
         self.alternating = alternating
-        self.shrinkage = shrinkage
         self.dual_dtype = dual_dtype
 
         super().__init__(primal_parameters, {})
 
     def step(self, closure):
-        def closure_with_shrinkage():
-            loss_, eq_defect_, inequality_defect_ = closure()
-            if self.shrinkage is not None and eq_defect_:
-                eq_defect_ = [self.shrinkage(e) for e in eq_defect_]
-
-            return loss_, eq_defect_, inequality_defect_
-
-        loss, eq_defect, inequality_defect = closure_with_shrinkage()
+        loss, eq_defect, inequality_defect = closure()
 
         if not self.equality_multipliers and not self.inequality_multipliers:
             self.init_dual_variables(eq_defect, inequality_defect, dtype=self.dual_dtype)
@@ -65,14 +55,14 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             should_back_prop = True
 
         if should_back_prop:
-            loss_, eq_defect_, inequality_defect_ = closure_with_shrinkage()
-            lagrangian_ = self.minmax_backward(loss_, eq_defect_, inequality_defect_)
+            loss_, eq_defect_, inequality_defect_ = closure()
+            self.minmax_backward(loss_, eq_defect_, inequality_defect_)
 
         self.primal_optimizer.step()
 
         if self.alternating:
-            loss_, eq_defect_, inequality_defect_ = closure_with_shrinkage()
-            lagrangian_ = self.minmax_backward(loss_, eq_defect_, inequality_defect_)
+            loss_, eq_defect_, inequality_defect_ = closure()
+            self.minmax_backward(loss_, eq_defect_, inequality_defect_)
         self.dual_optimizer.step()
 
         return lagrangian, loss, eq_defect, inequality_defect
@@ -162,8 +152,6 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
             *self.state["equality_multipliers"].parameters(),
             *self.state["inequality_multipliers"].parameters(),
         ])
-        if self.augmented_lagrangian_coefficient and (hasattr(self.primal_optimizer, "extrapolation") or hasattr(self.dual_optimizer, "extrapolation")):
-            warnings.warn("not sure if there is need to mix extrapolation and augmented lagrangian")
 
     @property
     def inequality_multipliers(self):
