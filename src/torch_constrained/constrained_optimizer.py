@@ -39,8 +39,12 @@ class ConstrainedOptimizer(torch.optim.Optimizer):
         if not self.equality_multipliers and not self.inequality_multipliers:
             self.init_dual_variables(eq_defect, inequality_defect, dtype=self.dual_dtype)
 
-        assert eq_defect is None or all([validate_defect(d, m) for d, m in zip(eq_defect, self.equality_multipliers)])
-        assert inequality_defect is None or all([d.shape == m.shape for d, m in zip(inequality_defect, self.inequality_multipliers)])
+        assert eq_defect is None or all(
+            [validate_defect(d, m) for d, m in zip(eq_defect, self.equality_multipliers)]
+        ), "The equality constraint changed shape"
+        assert inequality_defect is None or all(
+            [d.shape == m.shape for d, m in zip(inequality_defect, self.inequality_multipliers)]
+        ), "The inequality constraint changed shape"
 
         lagrangian = self.minmax_backward(loss, eq_defect, inequality_defect)
 
